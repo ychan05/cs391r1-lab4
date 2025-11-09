@@ -15,49 +15,21 @@ parameter NUM_REGS = 20;
     wire bvalid;
     wire [1:0] bresp;
     wire arready;
-    bit arvalid;
-    bit [19:0] araddr;
-    bit rready;
+    wire arvalid;
+    wire [19:0] araddr;
+    wire rready;
     wire rvalid;
     wire [31:0] rdata;
-    bit error;
+    wire error;
     reg [7:0] my_memory[0:511];
+
+    wire [2:0] awprot, arprot;
+    wire [3:0] wstrb;
+    wire [1:0] rresp;
 
     // Clock generation
     initial clk = 0;
     always #5 clk = ~clk;
-
-    // Instantiate the control unit
-   control_unit #(.WIDTH(WIDTH), .NUM_REGS(NUM_REGS)) dut (
-        .clk(clk),
-        .rst(rst),
-        .error(error),
-        
-        .M_AXI_AWADDR(awaddr),
-        .M_AXI_AWPROT(awprot),
-        .M_AXI_AWVALID(awvalid),
-        .M_AXI_AWREADY(awready),
-        
-        .M_AXI_WDATA(wdata),
-        .M_AXI_WSTRB(wstrb),
-        .M_AXI_WVALID(wvalid),
-        .M_AXI_WREADY(wready),
-        
-        .M_AXI_BRESP(bresp),
-        .M_AXI_BVALID(bvalid),
-        .M_AXI_BREADY(bready),
-        
-        .M_AXI_ARADDR(araddr),
-        .M_AXI_ARPROT(arprot),
-        .M_AXI_ARVALID(arvalid),
-        .M_AXI_ARREADY(arready),
-        
-        .M_AXI_RDATA(rdata),
-        .M_AXI_RRESP(rresp),
-        .M_AXI_RVALID(rvalid),
-        .M_AXI_RREADY(rready)
-    );
-
 
     // Instantiate a simple BRAM model
     bram_controller bram (
@@ -94,16 +66,63 @@ parameter NUM_REGS = 20;
     endgenerate
     
     initial begin
+            awvalid = 1;
+            wvalid = 1;
+            awaddr = 380;  // 0x17C
+            wdata = 32'hDEADBEEF;
+            #20;
+            awvalid = 0;
+            wvalid = 0;
+            bready= 1;
+            #20;
+            bready = 0;
+            #30;
+    end
+   
+    
+        // Instantiate the control unit
+   control_unit #(.WIDTH(WIDTH), .NUM_REGS(NUM_REGS)) dut (
+        .clk(clk),
+        .rst(rst),
+        .error(error),
+        
+        .M_AXI_AWADDR(awaddr),
+        .M_AXI_AWPROT(awprot),
+        .M_AXI_AWVALID(awvalid),
+        .M_AXI_AWREADY(awready),
+        
+        .M_AXI_WDATA(wdata),
+        .M_AXI_WSTRB(wstrb),
+        .M_AXI_WVALID(wvalid),
+        .M_AXI_WREADY(wready),
+        
+        .M_AXI_BRESP(bresp),
+        .M_AXI_BVALID(bvalid),
+        .M_AXI_BREADY(bready),
+        
+        .M_AXI_ARADDR(araddr),
+        .M_AXI_ARPROT(arprot),
+        .M_AXI_ARVALID(arvalid),
+        .M_AXI_ARREADY(arready),
+        
+        .M_AXI_RDATA(rdata),
+        .M_AXI_RRESP(rresp),
+        .M_AXI_RVALID(rvalid),
+        .M_AXI_RREADY(rready)
+    );
+
+initial begin
+
         // Reset
         rst = 1;
         #20;
         rst = 0;
-
+    
         // Load program into memory
         $readmemh("/home/ugrad/yc3146/lab3/lab3.srcs/sources_1/new/lab3_binary.hex", my_memory);
-
-        // Load program into BRAM over AXI (byte to 32-bit word)
-        for (int i = 0; i < 512; i = i + 4) begin
+        
+        // Load program into BRAM
+        for (int i = 0; i < 368; i = i + 4) begin
             awvalid = 1;
             wvalid  = 1;
             awaddr  = i;
@@ -116,8 +135,6 @@ parameter NUM_REGS = 20;
             bready  = 0;
             #30;
         end
-
-
         $finish;
     end
 endmodule

@@ -88,8 +88,10 @@ reg [31:0] fetched_instruction;
 reg arvalid_reg;
 reg rready_reg;
 
+reg [19:0] araddr_reg;
+
 // Assign BRAM outputs
-assign M_AXI_ARADDR  = PC; // always read from address stored in PC
+assign M_AXI_ARADDR  = araddr_reg;
 assign M_AXI_ARPROT  = 3'b000;
 assign M_AXI_ARVALID = arvalid_reg; // take vals from reg since they need to be changed in FSM
 assign M_AXI_RREADY  = rready_reg; // takes vals from reg since they need to be changed in FSM
@@ -125,7 +127,9 @@ alu #(.OP_WIDTH(WIDTH)) my_alu (
     .error(alu_error)
 );
 
-// FSM: 0 = READY, 1 = FETCHING, 2 = DECODE, 3 = EXECUTE, 4 = WRITEBACK, 5 = MOVE TO NEXT
+reg [31:0] loaded_data; // store data from load instructions
+
+// FSM: 0 = READY, 1 = FETCHING, 2 = DECODE, 3 = EXECUTE, 4 = WRITEBACK, 5 = MOVE TO NEXT, 6 = LOAD 
 reg [2:0] state;
 
 always @(posedge clk) begin
@@ -140,6 +144,7 @@ always @(posedge clk) begin
     end else begin
         case (state)
             3'd0: begin // STATE 0: READY
+                araddr_reg <= PC;
                 we <= 0;
                 error_reg <= 0;
                 arvalid_reg <= 1; // Ready to give address to read from
@@ -245,6 +250,15 @@ always @(posedge clk) begin
                         end 
                     end
                     
+                    7'b0000011: begin // I type loads
+                        // first calculate address to read from
+                        alu_op1 <= rs;
+                        alu_op2 <= {{20{fetched_instruction[31]}}, fetched_instruction[31:20]};
+                        alu_control <= 4'b0111;
+                        state <= 6; // move to next state to load because we need one clock cycle to calc address
+                        
+                    end
+                    
                     default: begin
                         error_reg <= 1; // Unknown instruction
                     end
@@ -254,7 +268,29 @@ always @(posedge clk) begin
                     error_reg <= 1; 
                 end
                 
-                state <= 4;
+                if (opcode != 7'b0000011) begin 
+                    state <= 4;
+                end else begin
+                   
+                end
+            end
+            
+            3'd6: begin // STATE 6: LOAD
+                araddr_reg  <= alu_res[19:0]; // take the calculated address
+                arvalid_reg <= 1;
+                rready_reg <= 1;
+                state <= 7;    
+                
+               
+            end
+            
+            3'd7: begin // STATE 7: Load fetch:
+              if (M_AXI_RVALID && M_AXI_RREADY) begin
+                  arvalid_reg <= 0;
+                  loaded_data <= M_AXI_RDATA;
+                  state <= 4; // now move to WRITEBACK
+
+              end 
             end
 
             3'd4: begin // STATE 4: WRITEBACK
@@ -268,7 +304,18 @@ always @(posedge clk) begin
                     if (opcode == 7'b0110111) begin // LUI
                         d_in <= imm;
                         we <= 1;
-                    end else begin // R-type and I-type
+                    end 
+                    else if (opcode == 7'b0000011) begin 
+
+                        case(funct3)
+                            3'h0: d_in <= {{24{loaded_data[7]}},  loaded_data[7:0]};   // LB
+                            3'h1: d_in <= {{16{loaded_data[15]}}, loaded_data[15:0]};  // LH
+                            3'h2: d_in <= loaded_data; // LW
+                            default: d_in <= 0;
+                    endcase
+                    we <= 1;
+                    end
+                    else begin // R-type and I-type
                         d_in <= alu_res;
                         we <= 1;
                     end
