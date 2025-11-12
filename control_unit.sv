@@ -27,7 +27,7 @@ module control_unit #(
     input wire clk,
 input wire rst,
 output wire error,
-
+    input wire enable,  // ADDED: Enable signal
 // BRAM Manager
 output wire [19:0] M_AXI_AWADDR,
 output wire [2:0] M_AXI_AWPROT,
@@ -90,20 +90,30 @@ reg rready_reg;
 
 reg [19:0] araddr_reg;
 
+// write channel registers
+reg awvalid_reg;
+reg wvalid_reg;
+reg bready_reg;
+
+reg [19:0] awaddr_reg;
+reg [31:0] wdata_reg;
+reg [3:0]  wstrb_reg;
+
+
 // Assign BRAM outputs
 assign M_AXI_ARADDR  = araddr_reg;
 assign M_AXI_ARPROT  = 3'b000;
 assign M_AXI_ARVALID = arvalid_reg; // take vals from reg since they need to be changed in FSM
 assign M_AXI_RREADY  = rready_reg; // takes vals from reg since they need to be changed in FSM
 
-// Zero out unused write channels
-assign M_AXI_AWADDR  = 20'b0;
-assign M_AXI_AWPROT  = 3'b0;
-assign M_AXI_AWVALID = 1'b0;
-assign M_AXI_WDATA   = 32'b0;
-assign M_AXI_WSTRB   = 4'b0;
-assign M_AXI_WVALID  = 1'b0;
-assign M_AXI_BREADY  = 1'b0;
+// assign write channel registers
+assign M_AXI_AWADDR  = awaddr_reg;
+assign M_AXI_AWPROT  = 3'b000;
+assign M_AXI_AWVALID = awvalid_reg;
+assign M_AXI_WDATA   = wdata_reg;
+assign M_AXI_WSTRB   = wstrb_reg;
+assign M_AXI_WVALID  = wvalid_reg;
+assign M_AXI_BREADY  = bready_reg;
 
 // Register file instantiation
 register_file #(.WIDTH(WIDTH), .NUM_REG(NUM_REGS))
@@ -129,8 +139,9 @@ alu #(.OP_WIDTH(WIDTH)) my_alu (
 
 reg [31:0] loaded_data; // store data from load instructions
 
-// FSM: 0 = READY, 1 = FETCHING, 2 = DECODE, 3 = EXECUTE, 4 = WRITEBACK, 5 = MOVE TO NEXT, 6 = LOAD 
-reg [2:0] state;
+// FSM: 0 = READY, 1 = FETCHING, 2 = DECODE, 3 = EXECUTE, 4 = WRITEBACK, 5 = MOVE TO NEXT, 6 = LOAD, 7 = load fetch, 
+// 8 = store
+reg [3:0] state;
 
 always @(posedge clk) begin
     if (rst) begin
@@ -138,12 +149,18 @@ always @(posedge clk) begin
         error_reg <= 0;
         we <= 0;
         arvalid_reg <= 0;
-        rready_reg <= 1;
+        rready_reg <= 0;
         PC <= 0;
         fetched_instruction <= 0;
+        awaddr_reg = 0;
+        awvalid_reg = 0; 
+        wdata_reg = 0;
+        wstrb_reg = 0;
+        wvalid_reg = 0;
+        bready_reg = 0;
     end else begin
         case (state)
-            3'd0: begin // STATE 0: READY
+            4'd0: begin // STATE 0: READY
                 araddr_reg <= PC;
                 we <= 0;
                 error_reg <= 0;
@@ -152,7 +169,7 @@ always @(posedge clk) begin
                 state <= 1;      
             end
             
-            3'd1: begin // STATE 1: FETCHING
+            4'd1: begin // STATE 1: FETCHING
                 we <= 0;
                 error_reg <= 0;
 
@@ -163,7 +180,7 @@ always @(posedge clk) begin
                 end
             end
             
-            3'd2: begin // STATE 2: DECODE
+            4'd2: begin // STATE 2: DECODE
                 // Decode instruction
                 opcode <= fetched_instruction[6:0];
                 funct7 <= fetched_instruction[31:25];
@@ -175,7 +192,7 @@ always @(posedge clk) begin
                 state <= 3;
             end 
             
-            3'd3: begin // STATE 3: EXECUTE 
+            4'd3: begin // STATE 3: EXECUTE 
                 case (opcode)
                     7'b0110011: begin // R-type
                         case ({funct7, funct3})
@@ -258,6 +275,12 @@ always @(posedge clk) begin
                         state <= 6; // move to next state to load because we need one clock cycle to calc address
                         
                     end
+                    7'b0100011: begin // S type
+                            alu_op1 <= rs;
+                            alu_op2 <= {{20{fetched_instruction[31]}}, fetched_instruction[31:25], fetched_instruction[11:7]};
+                            alu_control <= 4'b0111;
+                            state <= 8; // store state after calculating address
+                    end
                     
                     default: begin
                         error_reg <= 1; // Unknown instruction
@@ -268,32 +291,77 @@ always @(posedge clk) begin
                     error_reg <= 1; 
                 end
                 
-                if (opcode != 7'b0000011) begin 
+                if (opcode != 7'b0000011 && opcode != 7'b0100011) begin 
                     state <= 4;
                 end else begin
-                   
+                   if (opcode == 7'b0100011) begin
+                    state <= 8;
+                   end else begin 
+                    state <= 6;
+                   end
                 end
             end
             
-            3'd6: begin // STATE 6: LOAD
+            4'd8: begin // STORE: issue address & data
+                awaddr_reg  <= alu_res[19:0];
+                awvalid_reg <= 1;
+                wvalid_reg  <= 1;
+            
+                case (funct3)
+                    3'h0: begin // SB
+                        wdata_reg <= {24'b0, rt[7:0]};
+                        wstrb_reg <= 4'b0001;
+                    end
+                    3'h1: begin // SH
+                        wdata_reg <= {16'b0, rt[15:0]};
+                        wstrb_reg <= 4'b0011;
+                    end
+                    3'h2: begin // SW
+                        wdata_reg <= rt;
+                        wstrb_reg <= 4'b1111;
+                    end
+                    default: error_reg <= 1;
+                endcase
+            
+           if (M_AXI_AWREADY && M_AXI_WREADY) begin
+                   awvalid_reg <= 0;
+                   wvalid_reg  <= 0;
+                   state <= 9; // move to wait for BVALID
+                end 
+            end
+            
+            4'd9: begin
+            if (M_AXI_BVALID) begin
+                        bready_reg <= 1;  
+                        awvalid_reg <= 0;
+                        wvalid_reg <= 0;
+                        state <= 10;       
+                    end 
+            
+            end
+            4'd10: begin // STORE wait for B
+                    bready_reg <= 0;
+                    state <= 5; // increment PC
+            end
+            
+            4'd6: begin // STATE 6: LOAD
                 araddr_reg  <= alu_res[19:0]; // take the calculated address
                 arvalid_reg <= 1;
                 rready_reg <= 1;
                 state <= 7;    
-                
                
             end
             
-            3'd7: begin // STATE 7: Load fetch:
+            4'd7: begin // STATE 7: Load fetch:
               if (M_AXI_RVALID && M_AXI_RREADY) begin
                   arvalid_reg <= 0;
                   loaded_data <= M_AXI_RDATA;
-                  state <= 4; // now move to WRITEBACK
+                  state <= 4; //  move to WRITEBACK
 
               end 
             end
 
-            3'd4: begin // STATE 4: WRITEBACK
+            4'd4: begin // STATE 4: WRITEBACK
                 if (error_reg) begin
                     we <= 0;
                     arvalid_reg <= 0;
@@ -324,7 +392,7 @@ always @(posedge clk) begin
                 end
             end
            
-            3'd5: begin // STATE 5: MOVE TO NEXT
+            4'd5: begin // STATE 5: MOVE TO NEXT
                 we <= 0;
                 PC <= PC + 4;
                 state <= 0;
