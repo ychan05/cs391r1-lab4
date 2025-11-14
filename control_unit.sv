@@ -22,7 +22,7 @@
 
 module control_unit #(
     parameter WIDTH = 32,        
-    parameter NUM_REGS = 16     
+    parameter NUM_REGS = 32     
 )(
     input wire clk,
 input wire rst,
@@ -140,7 +140,7 @@ alu #(.OP_WIDTH(WIDTH)) my_alu (
 reg [31:0] loaded_data; // store data from load instructions
 
 // FSM: 0 = READY, 1 = FETCHING, 2 = DECODE, 3 = EXECUTE, 4 = WRITEBACK, 5 = MOVE TO NEXT, 6 = LOAD, 7 = load fetch, 
-// 8 = store
+// 8 = store, 9 = STORE wait for B VALID, 10 = deassign bready
 reg [3:0] state;
 
 always @(posedge clk) begin
@@ -190,10 +190,18 @@ always @(posedge clk) begin
                 rd <= fetched_instruction[11:7];
                 
                 state <= 3;
-            end 
-            
+            end
+      
             4'd3: begin // STATE 3: EXECUTE 
                 case (opcode)
+                    7'b1100011: begin // B-type
+                        // we use sub as our comparison operator
+                        alu_control <= 4'b1000;
+                        alu_op1 <= rs;
+                        alu_op2 <= rt;
+                        
+                        state <= 5; // jump straight to next instruction state
+                    end
                     7'b0110011: begin // R-type
                         case ({funct7, funct3})
                             10'b0000000_111: alu_control <= 4'b0010; // AND
@@ -302,7 +310,7 @@ always @(posedge clk) begin
                 end
             end
             
-            4'd8: begin // STORE: issue address & data
+            4'd8: begin // STORE: issue address and data to AXI
                 awaddr_reg  <= alu_res[19:0];
                 awvalid_reg <= 1;
                 wvalid_reg  <= 1;
@@ -330,7 +338,7 @@ always @(posedge clk) begin
                 end 
             end
             
-            4'd9: begin
+            4'd9: begin // wait for B VALID
             if (M_AXI_BVALID) begin
                         bready_reg <= 1;  
                         awvalid_reg <= 0;
@@ -352,7 +360,7 @@ always @(posedge clk) begin
                
             end
             
-            4'd7: begin // STATE 7: Load fetch:
+            4'd7: begin // STATE 7: Load fetch
               if (M_AXI_RVALID && M_AXI_RREADY) begin
                   arvalid_reg <= 0;
                   loaded_data <= M_AXI_RDATA;
@@ -391,10 +399,45 @@ always @(posedge clk) begin
                     state <= 5;
                 end
             end
+      
            
             4'd5: begin // STATE 5: MOVE TO NEXT
                 we <= 0;
-                PC <= PC + 4;
+                if (opcode == 7'b1100011) begin
+                    case (funct3) 
+                        3'h0: begin // BEQ
+                            if (alu_res == 0) begin
+                                PC <= PC + {{6{fetched_instruction[31]}}, fetched_instruction[31], fetched_instruction[7], fetched_instruction[30:25], fetched_instruction[11:8], 1'b0};;
+                            end else begin 
+                                PC <= PC + 4;
+                            end
+                        end
+                        3'h1: begin // BNE
+                            if (alu_res != 0) begin
+                                PC <= PC + {{7{fetched_instruction[31]}}, fetched_instruction[31], fetched_instruction[7], fetched_instruction[30:25], fetched_instruction[11:8]};;
+                            end else begin 
+                                PC <= PC + 4;
+                            end                              
+                        end 
+                        3'h4: begin // BLT
+                            if ($signed(alu_res) < 0) begin
+                                PC <= PC + {{6{fetched_instruction[31]}}, fetched_instruction[31], fetched_instruction[7], fetched_instruction[30:25], fetched_instruction[11:8], 1'b0};;;
+                            end else begin 
+                                PC <= PC + 4;
+                            end                              
+                        end 
+                        3'h5: begin // BGE
+                            if ($signed(alu_res) >= 0) begin
+                                PC <= PC + {{6{fetched_instruction[31]}}, fetched_instruction[31], fetched_instruction[7], fetched_instruction[30:25], fetched_instruction[11:8], 1'b0};
+                            end else begin 
+                                PC <= PC + 4;
+                            end                              
+                        end 
+                        default: PC <= PC + 4;
+                    endcase
+                end else begin
+                    PC <= PC + 4;
+                end
                 state <= 0;
             end
 

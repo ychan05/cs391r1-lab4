@@ -1,6 +1,6 @@
 module control_unit_tb();
     parameter WIDTH = 32;
-    parameter NUM_REGS = 20;
+    parameter NUM_REGS = 32;
     bit clk;
     bit rst;
     wire awready;
@@ -132,7 +132,9 @@ module control_unit_tb();
     rst = 1;
     #10;
     rst = 0;
-    #2000;
+    
+    #1000000;
     $finish;
+
 end
 endmodule
